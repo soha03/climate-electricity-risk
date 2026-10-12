@@ -1,121 +1,72 @@
 # Stochastic Electricity Market Risk under Climate Transition Scenarios
 
-## Research Project
+## Research Objective
 
-This project investigates how climate transition and renewable-generation uncertainty affect the dynamics and financial risk of European electricity markets.
+This project investigates how renewable generation, electricity demand, cross-border market conditions and climate-transition uncertainty influence European electricity markets and price risk.
 
-The project combines:
+The project begins with empirical analysis of day-ahead electricity prices and will progressively develop towards statistical modelling, stochastic simulation and quantitative risk measurement.
 
-- stochastic modelling
-- electricity-market analysis
-- renewable-generation uncertainty
-- climate-transition scenarios
-- Monte Carlo simulation
-- quantitative financial risk measurement
+## Phase 1: European Electricity Market Analysis
 
-## Research Question
+The initial study compares six European markets:
 
-> How do renewable-generation uncertainty and climate-transition variables affect the dynamics and financial tail risk of European electricity prices?
+- Germany
+- Austria
+- France
+- Spain
+- Portugal
+- Italy
 
-## Motivation
+**Initial study period:** May to September 2026, subject to data availability.
 
-The increasing penetration of variable renewable energy sources such as wind and solar changes the structure and uncertainty of electricity markets.
+Planned analysis includes:
 
-Electricity prices differ from many conventional financial assets because they can exhibit:
+- Hourly and monthly electricity-price profiles
+- Midday-to-evening price spreads
+- Negative-price frequency and price volatility
+- Cross-country price differences
+- Renewable generation, electricity demand and residual load
+- Cross-border electricity flows and market structure
 
-- strong seasonality
-- mean reversion
-- volatility clustering
-- extreme price spikes
-- negative prices
-- dependence on weather and renewable generation
+Italian bidding zones will be considered explicitly rather than assuming a single uniform national price.
 
-The project aims to develop a stochastic framework that captures these characteristics and examines their implications for financial risk.
+## Phase 2: Market Drivers
 
-## Research Framework
+The analysis will investigate relationships between electricity prices and renewable generation, demand, generation mix, cross-border exchanges, fuel prices, carbon prices and other relevant market conditions.
 
-The project follows the transmission mechanism:
+Observed associations will not automatically be interpreted as causal relationships.
 
-Climate and transition scenarios  
-↓  
-Renewable-generation uncertainty  
-↓  
-Electricity-market dynamics  
-↓  
-Stochastic electricity-price model  
-↓  
-Monte Carlo simulation  
-↓  
-Financial exposure  
-↓  
-VaR, Expected Shortfall and stress testing
+## Phase 3: Stochastic Modelling and Risk
 
-## Methodology
+Subject to data quality and empirical findings, subsequent work will explore:
 
-The project will progressively investigate:
+- Seasonality and mean reversion
+- Volatility clustering and extreme price events
+- Models accommodating zero and negative electricity prices
+- Monte Carlo simulation and price-risk measurement
+- Value at Risk (VaR) and Expected Shortfall
+- Flexibility and battery-storage scenarios
 
-1. Statistical characteristics of European electricity prices
-2. Price seasonality, volatility and extreme observations
-3. Relationships between renewable generation and electricity prices
-4. Stochastic models for electricity prices
-5. Calibration of model parameters using market data
-6. Monte Carlo simulation of electricity-price paths
-7. Climate-transition scenario analysis
-8. Financial exposure and portfolio risk
-9. Value-at-Risk and Expected Shortfall
-10. Potential hedging applications
+## Data Sources
 
-## Data
+- [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/)
+- [SMARD](https://www.smard.de/en/)
 
-The project will use publicly available data where possible, including:
-
-- European electricity prices
-- electricity demand
-- wind generation
-- solar generation
-- natural gas prices
-- European carbon allowance (EUA) prices
-- climate-transition scenario data
-
-All datasets and sources will be documented in the repository.
+Data sources, market definitions, timestamps, units, missing observations and processing decisions will be documented.
 
 ## Technology
 
-### Programming
+Python, NumPy, pandas, Matplotlib and automated testing. Additional statistical and modelling libraries will be introduced when required.
 
-- Python
-- Jupyter
+## Research Principles
 
-### Main libraries
+- Reproducible data pipelines
+- Transparent assumptions and validation
+- Separation of raw and processed data
+- Empirical conclusions grounded in observed data
+- Model selection justified by market characteristics
+- Synthetic data used for software testing only, never presented as real market findings
 
-- NumPy
-- Pandas
-- SciPy
-- Statsmodels
-- Matplotlib
+## Current Status
 
-Additional libraries will be introduced as required by the research.
-
-## Repository Structure
-
-```text
-climate-electricity-risk/
-│
-├── README.md
-├── .gitignore
-│
-├── data/
-│   ├── raw/
-│   └── processed/
-│
-├── notebooks/
-│
-├── src/
-│   ├── data/
-│   ├── models/
-│   ├── risk/
-│   └── visualization/
-│
-├── tests/
-│
-└── figures/
+The initial project structure, price-analysis functions and basic tests have been created. Real market data acquisition and empirical validation remain in progress.
