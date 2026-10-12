@@ -1,29 +1,42 @@
-﻿import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+﻿"""Repository entry point for the electricity-market risk project.
 
-# Synthetic hourly electricity prices: setup test only
-rng = np.random.default_rng(42)
-n = 24 * 365
-time = pd.date_range("2025-01-01", periods=n, freq="h")
+This script remains offline-safe. It checks for real empirical observations first;
+only when they are absent does it gracefully report the current status and explain
+how to supply real data later.
+"""
 
-daily = 15 * np.sin(2 * np.pi * time.hour / 24)
-seasonal = 10 * np.cos(2 * np.pi * time.dayofyear / 365)
-prices = 80 + daily + seasonal + rng.normal(0, 12, n)
+from __future__ import annotations
 
-df = pd.DataFrame({
-    "timestamp": time,
-    "price_eur_mwh": prices
-})
+from pathlib import Path
 
-print("\nPRICE SUMMARY")
-print(df["price_eur_mwh"].describe())
+from src.analyze_prices import compute_country_summary, load_prices
+from src.config import FIGURES_DIR, PROCESSED_DATA_DIR
 
-daily_prices = df.set_index("timestamp")["price_eur_mwh"].resample("D").mean()
-daily_prices.plot(figsize=(12, 5), title="Simulated Daily Electricity Prices")
-plt.xlabel("Date")
-plt.ylabel("Price (EUR/MWh)")
-plt.tight_layout()
-plt.savefig("daily_prices.png", dpi=150)
-print("\nChart saved to daily_prices.png")
-plt.show()
+
+def main() -> None:
+    """Run the project in its no-data state without requiring API access."""
+    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    data_path = PROCESSED_DATA_DIR / "day_ahead_prices.csv"
+    if not data_path.exists():
+        print("No empirical data file was found at:")
+        print(f"  {data_path}")
+        print("\nThis project is intentionally designed to run without a live ENTSO-E token.")
+        print("To enable the empirical analysis, download and validate a canonical hourly price dataset into the processed directory.")
+        print("The repository will then run the descriptive statistics and visualisation pipeline automatically.")
+        return
+
+    try:
+        df = load_prices(data_path)
+        summary = compute_country_summary(df)
+        print(f"Loaded {len(df):,} hourly observations across {len(summary)} countries.")
+        print(summary.to_string(index=False))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Unable to run the empirical pipeline: {exc}")
+        print("Please populate the canonical dataset and ensure no duplicates or invalid country codes remain.")
+
+
+if __name__ == "__main__":
+    main()
+
