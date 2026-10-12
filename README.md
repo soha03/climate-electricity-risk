@@ -61,12 +61,12 @@ The canonical `country_code` for the Italian observation is `IT`, while its expl
 
 ## Installation
 
-This project expects the repo virtual environment to be used. On Windows PowerShell:
+Create the project virtual environment and install its declared dependencies. On Windows PowerShell:
 
 ```powershell
-cd C:\Users\SOHA\Documents\energy-risk-lab
+py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install numpy pandas matplotlib
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 If the environment already contains the required dependencies, the install step may be skipped.
