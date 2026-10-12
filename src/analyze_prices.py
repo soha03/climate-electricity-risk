@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.config import COUNTRIES, FIGURES_DIR, PROCESSED_DATA_DIR, PROJECT_ROOT
 from src.data.ingest_prices import load_real_prices, validate_prices
+from src.visualization.plots import plot_price_series, plot_rolling_volatility
 
 DEFAULT_PRICE_FILE = PROCESSED_DATA_DIR / "day_ahead_prices.csv"
 
@@ -28,58 +29,79 @@ def load_prices(path: str | Path = DEFAULT_PRICE_FILE) -> pd.DataFrame:
 def compute_country_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute descriptive statistics at the country level."""
     data = validate_prices(df)
-    summary = data.groupby("country_code", as_index=False).agg(
+    summary = data.groupby(["country_code", "bidding_zone"], as_index=False).agg(
         observation_count=("price_eur_mwh", "size"),
         mean_price_eur_mwh=("price_eur_mwh", "mean"),
         median_price_eur_mwh=("price_eur_mwh", "median"),
         std_price_eur_mwh=("price_eur_mwh", "std"),
         min_price_eur_mwh=("price_eur_mwh", "min"),
         max_price_eur_mwh=("price_eur_mwh", "max"),
-        negative_price_hours=("price_eur_mwh", lambda x: int((x < 0).sum())),
+        negative_price_intervals=("price_eur_mwh", lambda x: int((x < 0).sum())),
     )
-    return summary.sort_values("country_code").reset_index(drop=True)
+    return summary.sort_values(["country_code", "bidding_zone"]).reset_index(drop=True)
 
 
-def detect_missing_timestamps(df: pd.DataFrame, country: str | None = None) -> pd.DataFrame:
-    """Return any missing hourly timestamps for the selected country or dataset."""
+def detect_missing_timestamps(
+    df: pd.DataFrame,
+    country: str | None = None,
+    interval_minutes: int | None = None,
+) -> pd.DataFrame:
+    """Return missing timestamps at the explicit or inferred market cadence."""
     data = validate_prices(df)
     if country is not None:
         data = data[data["country_code"] == country.upper()]
     if data.empty:
-        return pd.DataFrame(columns=["country_code", "timestamp_utc", "expected_timestamp_utc"])
+        return pd.DataFrame(columns=[
+            "country_code", "bidding_zone", "timestamp_utc", "expected_timestamp_utc"
+        ])
+    if interval_minutes is not None and interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive.")
 
-    min_ts = data["timestamp_utc"].min()
-    max_ts = data["timestamp_utc"].max()
-    full_index = pd.date_range(start=min_ts, end=max_ts, freq="h", tz="UTC")
-    observed = pd.Index(data["timestamp_utc"].sort_values().unique())
-    missing = full_index.difference(observed)
-    result = pd.DataFrame({
-        "country_code": country.upper() if country else data["country_code"].iloc[0],
-        "timestamp_utc": missing,
-    })
-    result["expected_timestamp_utc"] = result["timestamp_utc"]
-    return result.reset_index(drop=True)
+    missing_rows = []
+    for (country_code, bidding_zone), market in data.groupby(["country_code", "bidding_zone"]):
+        observed = pd.DatetimeIndex(market["timestamp_utc"].sort_values().unique())
+        if interval_minutes is None:
+            differences = observed[1:] - observed[:-1]
+            cadence = int(differences.min().total_seconds() // 60) if len(differences) else 60
+        else:
+            cadence = interval_minutes
+        full_index = pd.date_range(start=observed.min(), end=observed.max(), freq=f"{cadence}min")
+        missing = full_index.difference(observed)
+        missing_rows.extend(
+            {
+                "country_code": country_code,
+                "bidding_zone": bidding_zone,
+                "timestamp_utc": timestamp,
+                "expected_timestamp_utc": timestamp,
+            }
+            for timestamp in missing
+        )
+    return pd.DataFrame(
+        missing_rows,
+        columns=["country_code", "bidding_zone", "timestamp_utc", "expected_timestamp_utc"],
+    )
 
 
 def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute daily summary statistics using UTC-aligned hourly observations."""
+    """Compute daily summary statistics over observed UTC price intervals."""
     data = validate_prices(df)
     data = data.copy()
     data["date_utc"] = data["timestamp_utc"].dt.floor("D")
     data["hour_utc"] = data["timestamp_utc"].dt.hour
 
     rows = []
-    for (country, date), group in data.groupby(["country_code", "date_utc"]):
+    for (country, zone, date), group in data.groupby(["country_code", "bidding_zone", "date_utc"]):
         midday = group.loc[group["hour_utc"].between(10, 15), "price_eur_mwh"]
         evening = group.loc[group["hour_utc"].between(18, 21), "price_eur_mwh"]
         rows.append(
             {
                 "country_code": country,
+                "bidding_zone": zone,
                 "date_utc": date,
-                "observed_hours": int(len(group)),
+                "observed_intervals": int(len(group)),
                 "mean_price_eur_mwh": float(group["price_eur_mwh"].mean()),
                 "price_volatility_std": float(group["price_eur_mwh"].std(ddof=1)) if len(group) > 1 else 0.0,
-                "negative_price_hours": int((group["price_eur_mwh"] < 0).sum()),
+                "negative_price_intervals": int((group["price_eur_mwh"] < 0).sum()),
                 "midday_mean_eur_mwh": float(midday.mean()) if not midday.empty else np.nan,
                 "evening_mean_eur_mwh": float(evening.mean()) if not evening.empty else np.nan,
                 "evening_minus_midday_eur_mwh": (
@@ -90,11 +112,12 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=[
             "country_code",
+            "bidding_zone",
             "date_utc",
-            "observed_hours",
+            "observed_intervals",
             "mean_price_eur_mwh",
             "price_volatility_std",
-            "negative_price_hours",
+            "negative_price_intervals",
             "midday_mean_eur_mwh",
             "evening_mean_eur_mwh",
             "evening_minus_midday_eur_mwh",
@@ -103,22 +126,43 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calculate_rolling_volatility(series: pd.Series, window: int = 24) -> pd.Series:
-    """Compute a rolling standard deviation of hourly price changes or levels."""
+    """Compute rolling standard deviation over a count of observed intervals."""
     if window <= 1:
         raise ValueError("window must be at least 2.")
     return series.rolling(window=window, min_periods=window).std()
 
 
-def detect_irregular_intervals(df: pd.DataFrame) -> pd.DataFrame:
-    """Return any non-hourly intervals within the same country."""
+def detect_irregular_intervals(df: pd.DataFrame, interval_minutes: int | None = None) -> pd.DataFrame:
+    """Return intervals that differ from an explicit or inferred market cadence."""
     data = validate_prices(df)
     if data.empty:
-        return pd.DataFrame(columns=["country_code", "timestamp_utc", "diff_hours"])
-    data = data.sort_values(["country_code", "timestamp_utc"]).copy()
-    data["previous_timestamp_utc"] = data.groupby("country_code")["timestamp_utc"].shift(1)
-    data["diff_hours"] = (data["timestamp_utc"] - data["previous_timestamp_utc"]).dt.total_seconds() / 3600.0
-    irregular = data[data["diff_hours"].ne(1)]
-    return irregular[["country_code", "timestamp_utc", "diff_hours"]].reset_index(drop=True)
+        return pd.DataFrame(columns=["country_code", "bidding_zone", "timestamp_utc", "diff_minutes"])
+    if interval_minutes is not None and interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive.")
+    data = data.sort_values(["country_code", "bidding_zone", "timestamp_utc"]).copy()
+    data["previous_timestamp_utc"] = data.groupby(["country_code", "bidding_zone"])["timestamp_utc"].shift(1)
+    data["diff_minutes"] = (
+        data["timestamp_utc"] - data["previous_timestamp_utc"]
+    ).dt.total_seconds() / 60.0
+    expected_by_market = {}
+    for key, market in data.groupby(["country_code", "bidding_zone"]):
+        differences = market["diff_minutes"].dropna()
+        expected_by_market[key] = (
+            interval_minutes
+            if interval_minutes is not None
+            else (float(differences.min()) if not differences.empty else 60.0)
+        )
+    data["expected_interval_minutes"] = [
+        expected_by_market[(country, zone)]
+        for country, zone in zip(data["country_code"], data["bidding_zone"])
+    ]
+    irregular = data[
+        data["previous_timestamp_utc"].notna()
+        & data["diff_minutes"].ne(data["expected_interval_minutes"])
+    ]
+    return irregular[[
+        "country_code", "bidding_zone", "timestamp_utc", "diff_minutes", "expected_interval_minutes"
+    ]].reset_index(drop=True)
 
 
 def main() -> None:
@@ -137,9 +181,15 @@ def main() -> None:
     output = PROCESSED_DATA_DIR / "country_summary.csv"
     summary.to_csv(output, index=False)
 
-    print(f"Loaded {len(df):,} hourly observations.")
+    print(f"Loaded {len(df):,} observed price intervals at the verified 15-minute resolution.")
     print(f"Countries found: {', '.join(sorted(df['country_code'].unique()))}")
     print(f"Country summary saved to: {output}")
+    price_chart = FIGURES_DIR / "cross_country_day_ahead_prices.png"
+    volatility_chart = FIGURES_DIR / "cross_country_rolling_volatility.png"
+    plot_price_series(df, price_chart, interval_minutes=15)
+    plot_rolling_volatility(df, volatility_chart, interval_minutes=15, window_intervals=96)
+    print(f"Price chart saved to: {price_chart}")
+    print(f"Volatility chart saved to: {volatility_chart}")
 
 
 if __name__ == "__main__":

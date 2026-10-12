@@ -30,7 +30,7 @@ def main() -> None:
     try:
         df = load_prices(data_path)
         summary = compute_country_summary(df)
-        print(f"Loaded {len(df):,} hourly observations across {len(summary)} countries.")
+        print(f"Loaded {len(df):,} observed price intervals across {len(summary)} market rows.")
         print(summary.to_string(index=False))
     except (FileNotFoundError, ValueError) as exc:
         print(f"Unable to run the empirical pipeline: {exc}")

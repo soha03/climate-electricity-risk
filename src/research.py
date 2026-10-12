@@ -1,0 +1,691 @@
+"""Reproducible empirical research pipeline for the downloaded price sample."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from src.analyze_prices import compute_country_summary, load_prices
+from src.config import FIGURES_DIR, PROCESSED_DATA_DIR, PROJECT_ROOT
+from src.data.ingest_prices import validate_market_mapping
+from src.models.stochastic import fit_additive_seasonal_ar1, simulate_additive_seasonal_ar1
+from src.risk.metrics import expected_shortfall, historical_var, price_change_losses, price_shock_loss
+
+START = pd.Timestamp("2026-05-01T00:00:00Z")
+END_EXCLUSIVE = pd.Timestamp("2026-10-01T00:00:00Z")
+INTERVAL_MINUTES = 15
+SLOTS_PER_DAY = 96
+ROLLING_WINDOW = 96
+MARKETS = [
+    ("DE", "DE-LU", "Germany"),
+    ("AT", "AT", "Austria"),
+    ("FR", "FR", "France"),
+    ("ES", "ES", "Spain"),
+    ("PT", "PT", "Portugal"),
+    ("IT", "IT-North", "Italy (IT-North)"),
+]
+COUNTRY_BY_ZONE = {zone.upper(): country for country, zone, _ in MARKETS}
+LABEL_BY_ZONE = {zone.upper(): label for _, zone, label in MARKETS}
+SOURCE_URL = "https://github.com/whipeeer-creator/european-power-prices"
+
+
+def market_rows(data: pd.DataFrame, zone: str) -> pd.DataFrame:
+    """Select a market despite canonical uppercasing of zone identifiers."""
+    return data[data["bidding_zone"].str.upper() == zone.upper()].sort_values("timestamp_utc").copy()
+
+
+def _expected_index() -> pd.DatetimeIndex:
+    return pd.date_range(START, END_EXCLUSIVE, freq=f"{INTERVAL_MINUTES}min", inclusive="left")
+
+
+def _market_changes(market: pd.DataFrame) -> pd.DataFrame:
+    return price_change_losses(
+        market[["timestamp_utc", "price_eur_mwh"]],
+        interval_minutes=INTERVAL_MINUTES,
+        position_mwh=1.0,
+    )
+
+
+def audit_empirical_data(data: pd.DataFrame, raw_dir: Path | None = None) -> pd.DataFrame:
+    """Check raw-file coverage, source resolution, canonical rows, and missing intervals."""
+    data = validate_market_mapping(data)
+    raw_dir = raw_dir or PROJECT_ROOT / "data" / "raw" / "source_download"
+    expected_dates = pd.date_range(START.normalize(), END_EXCLUSIVE.normalize(), freq="D", inclusive="left")
+    expected_files = {f"{day:%Y-%m-%d}.csv" for day in expected_dates}
+    actual_files = {path.name for path in raw_dir.glob("2026-*.csv")}
+    missing_files = sorted(expected_files - actual_files)
+    if missing_files:
+        raise FileNotFoundError(f"Required raw daily CSVs are missing: {missing_files}")
+    if actual_files != expected_files:
+        raise ValueError("Unexpected dated raw CSV files are present in the source-download directory.")
+
+    required_raw = {"timestamp_utc", "zone", "price_eur_mwh", "resolution_min"}
+    raw_parts = []
+    for filename in sorted(expected_files):
+        frame = pd.read_csv(raw_dir / filename)
+        if not required_raw.issubset(frame.columns):
+            raise ValueError(f"Raw file {filename} has an unexpected schema.")
+        raw_parts.append(frame)
+    raw = pd.concat(raw_parts, ignore_index=True)
+    raw["timestamp_utc"] = pd.to_datetime(raw["timestamp_utc"], utc=True, errors="raise")
+
+    canonical_required = {
+        "timestamp_utc", "country_code", "bidding_zone", "price_eur_mwh", "source", "retrieved_at"
+    }
+    if not canonical_required.issubset(data.columns):
+        raise ValueError(f"Canonical data is missing columns: {sorted(canonical_required - set(data.columns))}")
+    if data["price_eur_mwh"].isna().any() or not np.isfinite(data["price_eur_mwh"]).all():
+        raise ValueError("Canonical prices contain missing or non-finite values.")
+    if data.duplicated(["timestamp_utc", "country_code", "bidding_zone"]).any():
+        raise ValueError("Canonical data contains duplicate market/timestamp keys.")
+
+    expected_index = _expected_index()
+    audit_rows = []
+    for country, source_zone, label in MARKETS:
+        canonical_zone = source_zone.upper()
+        market = data[
+            (data["country_code"] == country)
+            & (data["bidding_zone"].str.upper() == canonical_zone)
+        ].copy()
+        raw_market = raw[raw["zone"] == source_zone]
+        resolutions = sorted(set(raw_market["resolution_min"].dropna().astype(int)))
+        if resolutions != [INTERVAL_MINUTES]:
+            raise ValueError(f"{source_zone} source resolution is {resolutions}; expected only 15 minutes.")
+
+        raw_selected = raw_market[["timestamp_utc", "price_eur_mwh"]].sort_values("timestamp_utc").reset_index(drop=True)
+        canonical_selected = market[["timestamp_utc", "price_eur_mwh"]].sort_values("timestamp_utc").reset_index(drop=True)
+        if len(raw_selected) != len(canonical_selected):
+            raise ValueError(f"Raw/canonical observation counts do not match for {source_zone}.")
+        if not raw_selected["timestamp_utc"].reset_index(drop=True).equals(
+            canonical_selected["timestamp_utc"].reset_index(drop=True)
+        ) or not np.allclose(
+            raw_selected["price_eur_mwh"].to_numpy(dtype=float),
+            canonical_selected["price_eur_mwh"].to_numpy(dtype=float),
+            rtol=0,
+            atol=1e-10,
+        ):
+            raise ValueError(f"Canonical timestamps or prices differ from raw source rows for {source_zone}.")
+
+        observed_index = pd.DatetimeIndex(market["timestamp_utc"].sort_values().unique())
+        missing = expected_index.difference(observed_index)
+        expected_per_day = SLOTS_PER_DAY
+        observed_per_day = market.groupby(market["timestamp_utc"].dt.floor("D")).size()
+        partial_days = {
+            str(day.date()): int(count)
+            for day, count in observed_per_day.items()
+            if int(count) != expected_per_day
+        }
+        fully_missing_days = int((observed_per_day.reindex(expected_index.floor("D").unique(), fill_value=0) == 0).sum())
+        audit_rows.append(
+            {
+                "country_code": country,
+                "bidding_zone_source": source_zone,
+                "market": label,
+                "raw_observations": len(raw_market),
+                "canonical_observations": len(market),
+                "resolution_min": resolutions[0],
+                "first_timestamp_utc": observed_index.min(),
+                "last_timestamp_utc": observed_index.max(),
+                "expected_intervals": len(expected_index),
+                "missing_intervals": len(missing),
+                "fully_missing_days": fully_missing_days,
+                "partial_days": str(partial_days),
+                "duplicate_keys": int(market.duplicated(["timestamp_utc", "country_code", "bidding_zone"]).sum()),
+                "price_unit": "EUR/MWh",
+            }
+        )
+
+    if len(data) != sum(row["canonical_observations"] for row in audit_rows):
+        raise ValueError("Canonical file contains observations outside the six requested markets.")
+    return pd.DataFrame(audit_rows)
+
+
+def compute_descriptive_statistics(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Calculate distribution, intraday, and 24-hour rolling-volatility results."""
+    stats_rows = []
+    intraday_frames = []
+    volatility_rows = []
+    full_index = _expected_index()
+
+    for country, zone, label in MARKETS:
+        market = market_rows(data, zone)
+        prices = market["price_eur_mwh"].astype(float)
+        quantiles = prices.quantile([0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99])
+        changes = _market_changes(market)["price_change_eur_mwh"]
+        abs_change_threshold = float(changes.abs().quantile(0.99))
+        spike_count = int((changes.abs() > abs_change_threshold).sum())
+        slot = (
+            market["timestamp_utc"].dt.hour * 60 + market["timestamp_utc"].dt.minute
+        ) // INTERVAL_MINUTES
+        intraday = market.assign(quarter_hour_utc=slot).groupby("quarter_hour_utc")["price_eur_mwh"].agg(
+            observation_count="size", mean_price_eur_mwh="mean", median_price_eur_mwh="median", std_price_eur_mwh="std"
+        ).reset_index()
+        intraday.insert(0, "bidding_zone", zone)
+        intraday.insert(0, "country_code", country)
+        intraday_frames.append(intraday)
+
+        grid = market.set_index("timestamp_utc")["price_eur_mwh"].reindex(full_index)
+        rolling = grid.rolling(ROLLING_WINDOW, min_periods=ROLLING_WINDOW).std()
+        valid_rolling = rolling.dropna()
+        stats_rows.append(
+            {
+                "country_code": country,
+                "bidding_zone": zone,
+                "market": label,
+                "observation_count": int(prices.size),
+                "mean_price_eur_mwh": float(prices.mean()),
+                "std_price_eur_mwh": float(prices.std(ddof=1)),
+                "min_price_eur_mwh": float(prices.min()),
+                "p01_price_eur_mwh": float(quantiles.loc[0.01]),
+                "p05_price_eur_mwh": float(quantiles.loc[0.05]),
+                "p25_price_eur_mwh": float(quantiles.loc[0.25]),
+                "p50_price_eur_mwh": float(quantiles.loc[0.50]),
+                "p75_price_eur_mwh": float(quantiles.loc[0.75]),
+                "p95_price_eur_mwh": float(quantiles.loc[0.95]),
+                "p99_price_eur_mwh": float(quantiles.loc[0.99]),
+                "max_price_eur_mwh": float(prices.max()),
+                "negative_price_intervals": int((prices < 0).sum()),
+                "negative_price_frequency_pct": float((prices < 0).mean() * 100),
+                "consecutive_15m_changes": int(changes.size),
+                "absolute_change_p99_eur_mwh": abs_change_threshold,
+                "absolute_change_spike_count": spike_count,
+                "absolute_change_spike_frequency_pct": float(spike_count / changes.size * 100),
+                "rolling_24h_window_count": int(valid_rolling.size),
+                "rolling_24h_std_mean_eur_mwh": float(valid_rolling.mean()),
+                "rolling_24h_std_median_eur_mwh": float(valid_rolling.median()),
+                "rolling_24h_std_p95_eur_mwh": float(valid_rolling.quantile(0.95)),
+            }
+        )
+        volatility_rows.append(
+            pd.DataFrame(
+                {
+                    "timestamp_utc": full_index,
+                    "country_code": country,
+                    "bidding_zone": zone,
+                    "rolling_24h_std_eur_mwh": rolling.to_numpy(),
+                }
+            )
+        )
+
+    return (
+        pd.DataFrame(stats_rows),
+        pd.concat(intraday_frames, ignore_index=True),
+        pd.concat(volatility_rows, ignore_index=True),
+    )
+
+
+def compute_correlations(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Compute pairwise-complete level and consecutive 15-minute change correlations."""
+    price_columns = {}
+    change_columns = {}
+    for _, zone, _ in MARKETS:
+        market = market_rows(data, zone).set_index("timestamp_utc")["price_eur_mwh"].sort_index()
+        price_columns[zone] = market
+        changes = _market_changes(market.reset_index()).set_index("timestamp_utc")["price_change_eur_mwh"]
+        change_columns[zone] = changes
+
+    prices = pd.concat(price_columns, axis=1)
+    changes = pd.concat(change_columns, axis=1)
+    price_corr = prices.corr(min_periods=2)
+    change_corr = changes.corr(min_periods=2)
+    price_n = prices.notna().astype(int).T.dot(prices.notna().astype(int))
+    change_n = changes.notna().astype(int).T.dot(changes.notna().astype(int))
+    return price_corr, price_n, change_corr, change_n
+
+
+def _acf_at_lag(residuals: pd.DataFrame, interval_index: pd.DatetimeIndex, lag: int) -> float:
+    series = residuals.set_index("timestamp_utc")["residual_eur_mwh"].reindex(interval_index)
+    return float(series.autocorr(lag=lag)) if len(series) > lag else float("nan")
+
+
+def fit_market_models(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    """Fit per-market seasonal AR(1), score chronological holdouts, and simulate paths."""
+    diagnostics = []
+    prediction_frames = []
+    fits: dict[str, object] = {}
+    for index, (country, zone, label) in enumerate(MARKETS):
+        market = market_rows(data, zone)[["timestamp_utc", "price_eur_mwh"]]
+        fit = fit_additive_seasonal_ar1(market, INTERVAL_MINUTES, train_fraction=0.8)
+        fits[zone] = fit
+        holdout = fit.holdout_predictions
+        residuals = holdout["residual_eur_mwh"]
+        rmse = float(np.sqrt(np.mean(np.square(residuals))))
+        seasonal_error = holdout["actual_price_eur_mwh"] - holdout["seasonal_baseline_eur_mwh"]
+        persistence_error = holdout["actual_price_eur_mwh"] - holdout["persistence_baseline_eur_mwh"]
+        residual_frame = holdout[["timestamp_utc", "residual_eur_mwh"]]
+        test_end = market["timestamp_utc"].max()
+        index_96 = pd.date_range(fit.cutoff, test_end, freq=f"{INTERVAL_MINUTES}min")
+        diagnostics.append(
+            {
+                "country_code": country,
+                "bidding_zone": zone,
+                "market": label,
+                "train_observations": fit.training_observations,
+                "train_consecutive_transitions": fit.training_transitions,
+                "holdout_one_step_predictions": int(len(holdout)),
+                "holdout_start_utc": fit.cutoff,
+                "ar_intercept": fit.intercept,
+                "ar_phi": fit.autoregression,
+                "stationary_phi_abs_lt_1": bool(abs(fit.autoregression) < 1),
+                "training_innovation_std_eur_mwh": float(np.std(fit.innovations, ddof=1)),
+                "holdout_residual_mean_eur_mwh": float(residuals.mean()),
+                "holdout_residual_std_eur_mwh": float(residuals.std(ddof=1)),
+                "holdout_residual_skew": float(residuals.skew()),
+                "holdout_residual_excess_kurtosis": float(residuals.kurtosis()),
+                "holdout_residual_p01_eur_mwh": float(residuals.quantile(0.01)),
+                "holdout_residual_p50_eur_mwh": float(residuals.quantile(0.50)),
+                "holdout_residual_p99_eur_mwh": float(residuals.quantile(0.99)),
+                "holdout_residual_acf_lag1": _acf_at_lag(residual_frame, index_96, 1),
+                "holdout_residual_acf_lag4": _acf_at_lag(residual_frame, index_96, 4),
+                "holdout_residual_acf_lag96": _acf_at_lag(residual_frame, index_96, 96),
+                "holdout_rmse_eur_mwh": rmse,
+                "holdout_mae_eur_mwh": float(np.mean(np.abs(residuals))),
+                "holdout_bias_eur_mwh": float(residuals.mean()),
+                "seasonal_baseline_rmse_eur_mwh": float(np.sqrt(np.mean(np.square(seasonal_error)))),
+                "persistence_baseline_rmse_eur_mwh": float(np.sqrt(np.mean(np.square(persistence_error)))),
+            }
+        )
+        selected = holdout.copy()
+        selected.insert(0, "market", label)
+        selected.insert(0, "bidding_zone", zone)
+        selected.insert(0, "country_code", country)
+        selected["series_type"] = "observed_actual_and_oos_prediction"
+        prediction_frames.append(selected)
+
+    return pd.DataFrame(diagnostics), pd.concat(prediction_frames, ignore_index=True), fits
+
+
+def calculate_risk(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Calculate historical VaR/ES and deterministic price-shock losses."""
+    risk_rows = []
+    stress_rows = []
+    loss_series = {}
+    for country, zone, label in MARKETS:
+        market = market_rows(data, zone)
+        changes = _market_changes(market)
+        losses = changes["loss_eur_per_position"].to_numpy(dtype=float)
+        loss_series[zone] = changes
+        for confidence in (0.95, 0.99):
+            risk_rows.append(
+                {
+                    "country_code": country,
+                    "bidding_zone": zone,
+                    "market": label,
+                    "position_mwh": 1.0,
+                    "loss_definition": "-1 MWh * consecutive 15-minute price change; positive is loss",
+                    "confidence": confidence,
+                    "sample_size": int(losses.size),
+                    "historical_var_eur": historical_var(losses, confidence),
+                    "historical_es_eur": expected_shortfall(losses, confidence),
+                }
+            )
+        for shock in (-250.0, -100.0, 100.0, 250.0):
+            stress_rows.append(
+                {
+                    "country_code": country,
+                    "bidding_zone": zone,
+                    "market": label,
+                    "position_mwh": 1.0,
+                    "price_change_scenario_eur_mwh": shock,
+                    "long_position_loss_eur": price_shock_loss(shock, 1.0),
+                    "interpretation": "instantaneous price shock; not an estimated probability",
+                }
+            )
+    return pd.DataFrame(risk_rows), pd.DataFrame(stress_rows), loss_series
+
+
+def _save_figures(
+    stats: pd.DataFrame,
+    intraday: pd.DataFrame,
+    price_corr: pd.DataFrame,
+    model_diagnostics: pd.DataFrame,
+    predictions: pd.DataFrame,
+    simulations: pd.DataFrame,
+    loss_series: dict[str, pd.DataFrame],
+    risk: pd.DataFrame,
+    figures_dir: Path,
+) -> list[Path]:
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    outputs = []
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(stats))
+    med = stats["p50_price_eur_mwh"].to_numpy()
+    lower = med - stats["p05_price_eur_mwh"].to_numpy()
+    upper = stats["p95_price_eur_mwh"].to_numpy() - med
+    ax.errorbar(x, med, yerr=np.vstack([lower, upper]), fmt="o", capsize=5)
+    ax.set_xticks(x, stats["bidding_zone"], rotation=20)
+    ax.set_ylabel("Price (EUR/MWh)")
+    ax.set_title("Observed price medians and 5th-95th percentiles")
+    fig.tight_layout()
+    path = figures_dir / "empirical_price_quantiles.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for _, zone, _ in MARKETS:
+        profile = intraday[intraday["bidding_zone"] == zone]
+        ax.plot(profile["quarter_hour_utc"] / 4, profile["mean_price_eur_mwh"], label=zone)
+    ax.set_xlabel("UTC hour of day")
+    ax.set_ylabel("Mean price (EUR/MWh)")
+    ax.set_title("Observed average intraday profile (15-minute slots)")
+    ax.legend(ncol=3, fontsize="small")
+    fig.tight_layout()
+    path = figures_dir / "empirical_intraday_profile.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    image = ax.imshow(price_corr.to_numpy(), vmin=-1, vmax=1, cmap="coolwarm")
+    ax.set_xticks(np.arange(len(price_corr.columns)), price_corr.columns, rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(price_corr.index)), price_corr.index)
+    for row in range(len(price_corr.index)):
+        for column in range(len(price_corr.columns)):
+            ax.text(column, row, f"{price_corr.iloc[row, column]:.2f}", ha="center", va="center", fontsize=8)
+    ax.set_title("Pairwise Pearson correlation of observed price levels")
+    fig.colorbar(image, ax=ax, label="Correlation")
+    fig.tight_layout()
+    path = figures_dir / "cross_country_price_correlation.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7), sharex=False, sharey=False)
+    for ax, (_, zone, label) in zip(axes.flat, MARKETS):
+        residual = predictions.loc[predictions["bidding_zone"] == zone, "residual_eur_mwh"]
+        ax.hist(residual, bins=40, color="#356b8c", alpha=0.85)
+        ax.axvline(0, color="black", linewidth=1)
+        rmse = model_diagnostics.loc[model_diagnostics["bidding_zone"] == zone, "holdout_rmse_eur_mwh"].iloc[0]
+        ax.set_title(f"{label}: n={len(residual):,}, RMSE={rmse:.1f}")
+        ax.set_xlabel("Out-of-sample residual (EUR/MWh)")
+        ax.set_ylabel("Count")
+    fig.suptitle("Seasonal additive AR(1) holdout residuals (observed outcomes)")
+    fig.tight_layout()
+    path = figures_dir / "model_holdout_residuals.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+
+    chosen_zone = "DE-LU"
+    sim = simulations[simulations["bidding_zone"] == chosen_zone]
+    observed = predictions[predictions["bidding_zone"] == chosen_zone].copy()
+    start = observed["timestamp_utc"].min()
+    stop = start + pd.Timedelta(days=7)
+    observed = observed[(observed["timestamp_utc"] >= start) & (observed["timestamp_utc"] < stop)]
+    sim = sim[(sim["timestamp_utc"] >= start) & (sim["timestamp_utc"] < stop)]
+    fig, ax = plt.subplots(figsize=(11, 5))
+    for _, path_frame in sim.groupby("path_id"):
+        ax.plot(path_frame["timestamp_utc"], path_frame["price_eur_mwh"], color="#5b8e7d", alpha=0.22, linewidth=0.8)
+    ax.plot(observed["timestamp_utc"], observed["actual_price_eur_mwh"], color="#202020", linewidth=1.5, label="Observed actual")
+    ax.set_title("DE-LU: simulated bootstrap paths vs observed holdout prices")
+    ax.set_xlabel("Timestamp (UTC)")
+    ax.set_ylabel("Price (EUR/MWh)")
+    ax.plot([], [], color="#5b8e7d", alpha=0.8, label="Simulated path (20 draws)")
+    ax.legend()
+    fig.tight_layout()
+    path = figures_dir / "simulated_vs_observed_DE-LU.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+    for ax, (_, zone, label) in zip(axes.flat, MARKETS):
+        losses = loss_series[zone]["loss_eur_per_position"].to_numpy()
+        var95 = risk.loc[(risk["bidding_zone"] == zone) & (risk["confidence"] == 0.95), "historical_var_eur"].iloc[0]
+        ax.hist(losses, bins=45, color="#bc6c25", alpha=0.82)
+        ax.axvline(var95, color="#283618", linestyle="--", label=f"95% VaR={var95:.1f}")
+        ax.set_title(f"{label}: n={len(losses):,} changes")
+        ax.set_xlabel("Loss (EUR per 1 MWh position)")
+        ax.set_ylabel("Count")
+        ax.legend(fontsize="small")
+    fig.suptitle("Historical 15-minute price-change loss distributions")
+    fig.tight_layout()
+    path = figures_dir / "historical_price_change_risk.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    outputs.append(path)
+    return outputs
+
+
+def _markdown_table(frame: pd.DataFrame, columns: list[str], formats: dict[str, str] | None = None) -> str:
+    formats = formats or {}
+    headers = [columns]
+    rows = []
+    for _, row in frame[columns].iterrows():
+        cells = []
+        for column in columns:
+            value = row[column]
+            if pd.isna(value):
+                cells.append("NA")
+            elif column in formats:
+                cells.append(format(float(value), formats[column]))
+            else:
+                cells.append(str(value))
+        rows.append(cells)
+    widths = [max(len(headers[0][i]), *(len(row[i]) for row in rows)) for i in range(len(columns))]
+    lines = ["| " + " | ".join(headers[0][i].ljust(widths[i]) for i in range(len(columns))) + " |"]
+    lines.append("| " + " | ".join("-" * widths[i] for i in range(len(columns))) + " |")
+    lines.extend("| " + " | ".join(row[i].ljust(widths[i]) for i in range(len(columns))) + " |" for row in rows)
+    return "\n".join(lines)
+
+
+def write_research_report(
+    audit: pd.DataFrame,
+    stats: pd.DataFrame,
+    correlations: pd.DataFrame,
+    change_correlations: pd.DataFrame,
+    model_diagnostics: pd.DataFrame,
+    risk: pd.DataFrame,
+    stress: pd.DataFrame,
+    report_path: Path,
+) -> None:
+    """Write a concise report whose numerical claims come from calculated outputs."""
+    highest_mean = stats.loc[stats["mean_price_eur_mwh"].idxmax()]
+    highest_negative = stats.loc[stats["negative_price_frequency_pct"].idxmax()]
+    highest_volatility = stats.loc[stats["rolling_24h_std_p95_eur_mwh"].idxmax()]
+    price_upper = correlations.where(np.triu(np.ones(correlations.shape), k=1).astype(bool)).stack()
+    change_upper = change_correlations.where(np.triu(np.ones(change_correlations.shape), k=1).astype(bool)).stack()
+    strongest_price_pair = price_upper.idxmax()
+    strongest_change_pair = change_upper.idxmax()
+    improved = int((model_diagnostics["holdout_rmse_eur_mwh"] < model_diagnostics["persistence_baseline_rmse_eur_mwh"]).sum())
+    largest_residual_kurtosis = model_diagnostics.loc[model_diagnostics["holdout_residual_excess_kurtosis"].idxmax()]
+    largest_lag96_acf = model_diagnostics.loc[model_diagnostics["holdout_residual_acf_lag96"].abs().idxmax()]
+    var95 = risk[risk["confidence"] == 0.95]
+    risk99 = risk[risk["confidence"] == 0.99]
+    total = int(audit["canonical_observations"].sum())
+    expected = int(audit["expected_intervals"].sum())
+
+    report = f"""# European Day-Ahead Electricity Prices: Empirical Risk Study
+
+## Scope and data audit
+
+This is a descriptive study of the observed 15-minute day-ahead auction prices from **2026-05-01 through 2026-09-30**. The source repository is [{SOURCE_URL}]({SOURCE_URL}); it documents timestamps in UTC, EUR/MWh prices, and the source-zone field. The selected Italian market is **IT-North**, not an Italy-wide aggregate. The preserved raw data contain 153 daily CSV files.
+
+The canonical observations reconcile to **{total:,}** rows ({', '.join(f'{int(row.canonical_observations):,} {row.bidding_zone_source}' for row in audit.itertuples())}); the persisted country summary also reconciles to the same total. Each market contributes {int(audit.canonical_observations.min()):,} rows. All six selected source zones report 15-minute resolution for this sample; no hourly/quarter-hourly mixing or hourly aggregation is used. Units are EUR/MWh. Prices include valid negative observations. Duplicate keys and missing/non-finite price values: **0**.
+
+The complete-grid expectation is {expected:,} intervals (14,688 per market). The audit found {int(audit.missing_intervals.sum()):,} missing intervals total, in the same two partial UTC days for each market: 2026-06-30 and 2026-09-07, each missing 88 of 96 intervals from 00:00 through 21:45 UTC. The remaining eight intervals occur from 22:00 through 23:45 UTC. No missing value was filled. Returns, model transitions, and rolling statistics require consecutive 15-minute observations, so gaps reduce their usable sample sizes.
+
+## Descriptive results
+
+Spike frequency is defined as the proportion of **absolute consecutive 15-minute price changes strictly greater than that market's empirical 99th percentile of absolute changes**. This is a transparent tail-event definition, not a universal market-regulatory definition. Quantiles are empirical sample quantiles. Negative frequency is a share of observed intervals, not hours.
+
+{_markdown_table(stats, ['bidding_zone','observation_count','mean_price_eur_mwh','std_price_eur_mwh','p05_price_eur_mwh','p50_price_eur_mwh','p95_price_eur_mwh','p99_price_eur_mwh','negative_price_frequency_pct','absolute_change_p99_eur_mwh','absolute_change_spike_count','absolute_change_spike_frequency_pct','rolling_24h_std_p95_eur_mwh'], {'mean_price_eur_mwh':'.2f','std_price_eur_mwh':'.2f','p05_price_eur_mwh':'.2f','p50_price_eur_mwh':'.2f','p95_price_eur_mwh':'.2f','p99_price_eur_mwh':'.2f','negative_price_frequency_pct':'.2f','absolute_change_p99_eur_mwh':'.2f','absolute_change_spike_frequency_pct':'.2f','rolling_24h_std_p95_eur_mwh':'.2f'})}
+
+The highest observed sample mean is {highest_mean.bidding_zone} at {highest_mean.mean_price_eur_mwh:.2f} EUR/MWh. The largest negative-price share is {highest_negative.bidding_zone} at {highest_negative.negative_price_frequency_pct:.2f}% of observed intervals. The largest 95th percentile of the 24-hour rolling standard deviation is {highest_volatility.bidding_zone} at {highest_volatility.rolling_24h_std_p95_eur_mwh:.2f} EUR/MWh. These are sample descriptions, not causal attributions.
+
+The 96-slot UTC intraday profile, including the observation count in each slot, is in `data/processed/intraday_profile.csv`. The rolling volatility series is in `data/processed/rolling_volatility_15m.csv`; rolling values are missing until a full 96-consecutive-interval window is available and resume after source gaps only after a full window exists.
+
+## Cross-market correlations
+
+The following matrices are Pearson correlations calculated pairwise on matching timestamps. The intraday profile shows UTC-slot variation, and fitted AR coefficients indicate serial persistence; the change matrix is included as a complementary short-horizon view. Pair sample sizes are saved alongside the matrices.
+
+Highest off-diagonal price-level correlation: {strongest_price_pair[0]} / {strongest_price_pair[1]} = {price_upper.loc[strongest_price_pair]:.4f}. Highest off-diagonal consecutive-change correlation: {strongest_change_pair[0]} / {strongest_change_pair[1]} = {change_upper.loc[strongest_change_pair]:.4f}.
+
+The correlation matrix files are `data/processed/cross_country_price_correlation.csv`, `data/processed/cross_country_price_correlation_n.csv`, `data/processed/cross_country_change_correlation.csv`, and `data/processed/cross_country_change_correlation_n.csv`.
+
+## Stochastic model and diagnostics
+
+The model is an **additive intraday-seasonal AR(1)**, fitted separately by market:
+
+`P[t] - m[slot(t)] = a + phi * (P[t-1] - m[slot(t-1)]) + epsilon[t]`.
+
+The 96 UTC quarter-hour seasonal means, intercept, autoregressive coefficient, and empirical innovations are estimated from the first 80% of observations in chronological order. Only adjacent observed 15-minute pairs enter fitting. Evaluation is one-step-ahead on the final 20%, using the immediately previous observed price; transitions crossing missing intervals are excluded. The additive form permits negative prices. Simulations resample centered in-sample innovations with replacement; they are illustrative conditional paths, not empirical observations or calibrated forecast distributions.
+
+{_markdown_table(model_diagnostics, ['bidding_zone','train_consecutive_transitions','holdout_one_step_predictions','ar_phi','stationary_phi_abs_lt_1','holdout_rmse_eur_mwh','seasonal_baseline_rmse_eur_mwh','persistence_baseline_rmse_eur_mwh','holdout_residual_mean_eur_mwh','holdout_residual_std_eur_mwh','holdout_residual_acf_lag1','holdout_residual_acf_lag96'], {'ar_phi':'.4f','holdout_rmse_eur_mwh':'.2f','seasonal_baseline_rmse_eur_mwh':'.2f','persistence_baseline_rmse_eur_mwh':'.2f','holdout_residual_mean_eur_mwh':'.2f','holdout_residual_std_eur_mwh':'.2f','holdout_residual_acf_lag1':'.3f','holdout_residual_acf_lag96':'.3f'})}
+
+The AR(1) has lower holdout RMSE than persistence in {improved} of 6 markets. The largest holdout residual excess kurtosis is {largest_residual_kurtosis.holdout_residual_excess_kurtosis:.2f} for {largest_residual_kurtosis.bidding_zone}; the largest absolute 96-interval residual autocorrelation is {abs(largest_lag96_acf.holdout_residual_acf_lag96):.3f} for {largest_lag96_acf.bidding_zone}. Residual skew, quantiles, all autocorrelations, and the individual one-step predictions are in `data/processed/model_holdout_diagnostics.csv` and `data/processed/model_holdout_predictions.csv`. These residual patterns indicate that the compact model should not be treated as a complete market-price generator.
+
+## Historical price-change risk
+
+Risk uses a **long position of 1 MWh** and each consecutive 15-minute change: `loss[t] = -1 MWh * (P[t] - P[t-1])`. Positive loss means the price fell; negative loss means a gain. VaR is the empirical confidence quantile of losses. Expected Shortfall is the arithmetic mean of the worst `ceil((1-confidence) * n)` observed losses, a discrete finite-sample tail convention. Sample sizes exclude transitions spanning gaps.
+
+### 95% Confidence
+
+{_markdown_table(var95, ['bidding_zone','sample_size','historical_var_eur','historical_es_eur'], {'historical_var_eur':'.2f','historical_es_eur':'.2f'})}
+
+### 99% Confidence
+
+{_markdown_table(risk99, ['bidding_zone','sample_size','historical_var_eur','historical_es_eur'], {'historical_var_eur':'.2f','historical_es_eur':'.2f'})}
+
+Stress scenarios are deterministic one-interval price shocks, not estimated probabilities. For a 1 MWh long exposure, price shocks of -250, -100, +100, and +250 EUR/MWh imply losses of +250, +100, -100, and -250 EUR, respectively. Full risk and scenario tables are `data/processed/price_change_risk.csv` and `data/processed/stress_scenarios.csv`.
+
+## Figures and reproducibility
+
+- `figures/empirical_price_quantiles.png` — observed median and 5th-95th percentile range.
+- `figures/empirical_intraday_profile.png` — observed UTC quarter-hour profiles.
+- `figures/cross_country_price_correlation.png` — pairwise price-level correlations.
+- `figures/model_holdout_residuals.png` — residual distributions against observed holdout outcomes.
+- `figures/simulated_vs_observed_DE-LU.png` — 20 explicitly simulated paths beside actual DE-LU holdout observations.
+- `figures/historical_price_change_risk.png` — historical 15-minute loss distributions and 95% VaR.
+
+Run `python -m src.research` with the project virtual environment to re-audit existing local data and regenerate the tables, figures, and this report. The command does not download or modify raw data. The offline test suite is `python tests/run_tests.py`.
+
+## Limitations
+
+This is a five-month descriptive sample with two common partial days, no weather/fuel/load/fundamental covariates, and no causal identification. The model is additive, uses a simple UTC intraday seasonal profile, and bootstraps innovations independently; it does not model volatility clustering, weekday effects, market coupling mechanisms, or structural climate-transition scenarios. VaR/ES describe a 1 MWh linear price exposure, not a trading portfolio with collateral, volume, basis, or transaction costs. Empirical, holdout-predicted, and simulated series are stored and labelled separately.
+"""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding="utf-8")
+
+
+def run_research(
+    data_path: Path | None = None,
+    raw_dir: Path | None = None,
+    processed_dir: Path | None = None,
+    figures_dir: Path | None = None,
+) -> dict[str, Path]:
+    """Run the complete offline empirical analysis without acquiring new data."""
+    processed_dir = processed_dir or PROCESSED_DATA_DIR
+    figures_dir = figures_dir or FIGURES_DIR
+    data = load_prices(data_path) if data_path else load_prices()
+    audit = audit_empirical_data(data, raw_dir)
+    country_summary = compute_country_summary(data)
+    stats, intraday, rolling = compute_descriptive_statistics(data)
+    price_corr, price_n, change_corr, change_n = compute_correlations(data)
+    model_diagnostics, predictions, fits = fit_market_models(data)
+    risk, stress, loss_series = calculate_risk(data)
+
+    simulations = []
+    simulation_rows = []
+    simulation_days = 7
+    simulation_paths = 20
+    for model_index, (_, zone, _) in enumerate(MARKETS):
+        market = market_rows(data, zone)[["timestamp_utc", "price_eur_mwh"]]
+        fit = fits[zone]
+        training = market[market["timestamp_utc"] < fit.cutoff]
+        origin = training.iloc[-1]
+        steps = simulation_days * SLOTS_PER_DAY
+        paths = simulate_additive_seasonal_ar1(
+            fit,
+            float(origin["price_eur_mwh"]),
+            origin["timestamp_utc"],
+            steps=steps,
+            paths=simulation_paths,
+            seed=20261012 + model_index,
+        )
+        paths.insert(0, "market", LABEL_BY_ZONE[zone.upper()])
+        paths.insert(0, "bidding_zone", zone.upper())
+        paths.insert(0, "country_code", COUNTRY_BY_ZONE[zone.upper()])
+        simulations.append(paths)
+        simulation_rows.append(
+            {
+                "country_code": COUNTRY_BY_ZONE[zone.upper()],
+                "bidding_zone": zone.upper(),
+                "market": LABEL_BY_ZONE[zone.upper()],
+                "series_type": "simulated",
+                "paths": simulation_paths,
+                "intervals_per_path": steps,
+                "simulated_observations": len(paths),
+                "simulated_negative_price_frequency_pct": float((paths["price_eur_mwh"] < 0).mean() * 100),
+                "simulated_price_p05_eur_mwh": float(paths["price_eur_mwh"].quantile(0.05)),
+                "simulated_price_p50_eur_mwh": float(paths["price_eur_mwh"].quantile(0.50)),
+                "simulated_price_p95_eur_mwh": float(paths["price_eur_mwh"].quantile(0.95)),
+            }
+        )
+    simulations_df = pd.concat(simulations, ignore_index=True)
+    simulation_summary = pd.DataFrame(simulation_rows)
+
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "audit": processed_dir / "empirical_data_audit.csv",
+        "country_summary": processed_dir / "country_summary.csv",
+        "descriptives": processed_dir / "market_descriptive_statistics.csv",
+        "intraday": processed_dir / "intraday_profile.csv",
+        "rolling": processed_dir / "rolling_volatility_15m.csv",
+        "price_correlation": processed_dir / "cross_country_price_correlation.csv",
+        "price_correlation_n": processed_dir / "cross_country_price_correlation_n.csv",
+        "change_correlation": processed_dir / "cross_country_change_correlation.csv",
+        "change_correlation_n": processed_dir / "cross_country_change_correlation_n.csv",
+        "model_diagnostics": processed_dir / "model_holdout_diagnostics.csv",
+        "model_predictions": processed_dir / "model_holdout_predictions.csv",
+        "simulations": processed_dir / "stochastic_simulations.csv",
+        "simulation_summary": processed_dir / "stochastic_simulation_summary.csv",
+        "risk": processed_dir / "price_change_risk.csv",
+        "stress": processed_dir / "stress_scenarios.csv",
+        "report": PROJECT_ROOT / "reports" / "european_electricity_market_research.md",
+    }
+    audit.to_csv(outputs["audit"], index=False)
+    country_summary.to_csv(outputs["country_summary"], index=False)
+    stats.to_csv(outputs["descriptives"], index=False)
+    intraday.to_csv(outputs["intraday"], index=False)
+    rolling.to_csv(outputs["rolling"], index=False)
+    price_corr.to_csv(outputs["price_correlation"], float_format="%.8f")
+    price_n.to_csv(outputs["price_correlation_n"])
+    change_corr.to_csv(outputs["change_correlation"], float_format="%.8f")
+    change_n.to_csv(outputs["change_correlation_n"])
+    model_diagnostics.to_csv(outputs["model_diagnostics"], index=False)
+    predictions.to_csv(outputs["model_predictions"], index=False)
+    simulations_df.to_csv(outputs["simulations"], index=False)
+    simulation_summary.to_csv(outputs["simulation_summary"], index=False)
+    risk.to_csv(outputs["risk"], index=False)
+    stress.to_csv(outputs["stress"], index=False)
+
+    figure_paths = _save_figures(
+        stats, intraday, price_corr, model_diagnostics, predictions,
+        simulations_df, loss_series, risk, figures_dir,
+    )
+    write_research_report(
+        audit, stats, price_corr, change_corr, model_diagnostics, risk, stress, outputs["report"]
+    )
+    outputs.update({f"figure_{index + 1}": path for index, path in enumerate(figure_paths)})
+    outputs["summary"] = outputs["descriptives"]
+    print(f"Audited {len(data):,} empirical observations across {len(MARKETS)} markets.")
+    print(f"Analysis outputs written to {processed_dir} and {figures_dir}.")
+    print(f"Research report written to {outputs['report']}.")
+    return outputs
+
+
+def main() -> None:
+    run_research()
+
+
+if __name__ == "__main__":
+    main()

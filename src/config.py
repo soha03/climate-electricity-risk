@@ -20,24 +20,51 @@ COUNTRIES = {
     "IT": "Italy",
 }
 
-# Italy is not a single homogeneous market. For the offline project baseline, we
-# retain the country code as IT but document when a bidding-zone filter is needed.
-# The actual ENTSO-E zone identifier must be confirmed with the source data before
-# claiming full Italian market coverage.
+# Italy is not a single homogeneous market. These are the explicit Italian zone
+# labels documented by the local European power prices dataset.
 ITALY_BIDDING_ZONES = [
     "IT-North",
-    "IT-Centre-North",
+    "IT-CNorth",
+    "IT-CSouth",
     "IT-South",
-    "IT-Brindisi",
-    "IT-Foggia",
+    "IT-Sicily",
+    "IT-Sardinia",
 ]
 DEFAULT_BIDDING_ZONE_BY_COUNTRY = {
-    "DE": "DE",
+    "DE": "DE-LU",
     "AT": "AT",
     "FR": "FR",
     "ES": "ES",
     "PT": "PT",
     "IT": "IT-North",
+}
+
+DATASET_ZONE_BY_COUNTRY = {
+    "DE": "DE-LU",
+    "AT": "AT",
+    "FR": "FR",
+    "ES": "ES",
+    "PT": "PT",
+    "IT": "IT-North",
+}
+
+# ENTSO-E API bidding-zone EIC codes; these differ from the local CSV zone labels.
+ENTSOE_COUNTRY_TO_ZONE = {
+    "DE": ["10YDE-VE-------2"],
+    "AT": ["10YAT-APG------L"],
+    "FR": ["10YFR-RTE------C"],
+    "ES": ["10YES-REE------0"],
+    "PT": ["10YPT-REN------W"],
+    "IT": ["10YIT---------C", "10YIT-GRTN-----B"],
+}
+
+SMARD_MARKET_LABELS = {
+    "DE": "Germany",
+    "AT": "Austria",
+    "FR": "France",
+    "ES": "Spain",
+    "PT": "Portugal",
+    "IT": "Italy",
 }
 
 START_DATE = "2026-05-01"
