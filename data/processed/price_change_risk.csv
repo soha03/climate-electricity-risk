@@ -1,0 +1,13 @@
+country_code,bidding_zone,market,position_mwh,loss_definition,confidence,sample_size,historical_var_eur,historical_es_eur
+DE,DE-LU,Germany,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,20.525999999999993,34.24356749311295
+DE,DE-LU,Germany,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,39.670000000000016,62.15198630136987
+AT,AT,Austria,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,27.267999999999958,46.71990358126722
+AT,AT,Austria,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,58.955999999999996,81.8704109589041
+FR,FR,France,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,23.00599999999998,35.23015151515151
+FR,FR,France,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,42.601200000000006,57.254794520547954
+ES,ES,Spain,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,15.440000000000015,25.079628099173554
+ES,ES,Spain,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,31.197600000000005,40.07609589041096
+PT,PT,Portugal,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,15.290000000000001,25.073856749311297
+PT,PT,Portugal,1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,31.197600000000005,40.96226027397261
+IT,IT-North,Italy (IT-North),1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.95,14509,19.81599999999998,29.498168044077133
+IT,IT-North,Italy (IT-North),1.0,-1 MWh * consecutive 15-minute price change; positive is loss,0.99,14509,35.726000000000006,45.80143835616438

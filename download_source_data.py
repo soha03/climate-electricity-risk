@@ -55,6 +55,7 @@ def iter_dates(start: date, end: date):
 def download_daily_files(start: date, end: date) -> list[Path]:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     downloaded: list[Path] = []
+    missing: list[str] = []
     for day in iter_dates(start, end):
         filename = day.isoformat() + ".csv"
         url = f"{SOURCE_BASE_URL}/{filename}"
@@ -70,7 +71,13 @@ def download_daily_files(start: date, end: date) -> list[Path]:
             downloaded.append(target)
             print(f"Downloaded {filename}")
         except (HTTPError, URLError) as exc:
+            missing.append(filename)
             print(f"Missing or inaccessible {filename}: {exc}")
+    if missing:
+        raise RuntimeError(
+            "Incomplete source download; no canonical CSV was written. "
+            f"Missing or inaccessible files: {', '.join(missing)}"
+        )
     return downloaded
 
 

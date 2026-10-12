@@ -21,7 +21,7 @@ European electricity markets are increasingly shaped by renewable penetration, w
 
 ## Data and scope
 
-The project runs offline after the data is present and does not require an API token. Its current empirical dataset is preserved in `data/raw/source_download/` and transformed into `data/processed/day_ahead_prices.csv`.
+Analysis runs offline after the data is present and does not require an API token. The repository includes the report, compact review tables, and final figures. It intentionally does not include the 153 raw daily CSVs or the full canonical observation file; those are generated locally by the documented download step.
 
 The project is designed for real market data from the following sources:
 
@@ -73,14 +73,33 @@ If the environment already contains the required dependencies, the install step 
 
 ## Running the project
 
-Run the full analysis without downloading or changing raw files:
+### Files included in a clone
+
+The tracked publication artifacts are:
+
+- Report: `reports/european_electricity_market_research.md`
+- Compact CSVs: `country_summary.csv`, `empirical_data_audit.csv`, `market_descriptive_statistics.csv`, `intraday_profile.csv`, both price/change correlation matrices and their pair-count matrices, `model_holdout_diagnostics.csv`, `price_change_risk.csv`, `stress_scenarios.csv`, and `stochastic_simulation_summary.csv` under `data/processed/`
+- Figures: `cross_country_day_ahead_prices.png`, `cross_country_price_correlation.png`, `cross_country_rolling_volatility.png`, `empirical_intraday_profile.png`, `empirical_price_quantiles.png`, `historical_price_change_risk.png`, `model_holdout_residuals.png`, and `simulated_vs_observed_DE-LU.png` under `figures/`
+
+Generated locally and not tracked: the 153 daily raw CSVs (about 19.5 MB in the current copy), the canonical 87,072-row `day_ahead_prices.csv` (about 10.0 MB), the full rolling-volatility series, per-interval holdout predictions, and individual stochastic paths. `.gitignore` keeps these local files and credentials out of Git while allowing the compact review artifacts above.
+
+### Reproduce the empirical analysis from a fresh clone
+
+From the repository root, install the declared dependencies if needed, then fetch the study-period source files and regenerate the canonical input:
 
 ```powershell
-cd C:\Users\SOHA\Documents\energy-risk-lab
+.\.venv\Scripts\python.exe .\download_source_data.py
+```
+
+This downloads `data/2026/YYYY-MM-DD.csv` from the documented public source for 2026-05-01 through 2026-09-30, preserving the daily files in `data/raw/source_download/`, and writes `data/processed/day_ahead_prices.csv`. The downloader now stops with the missing filenames if any request fails; do not use a partial output. Source: https://github.com/whipeeer-creator/european-power-prices
+
+Regenerate the audit, all numerical tables, report, simulations, and figures from those files:
+
+```powershell
 .\.venv\Scripts\python.exe -m src.research
 ```
 
-The runner re-audits all 153 existing daily source CSVs against the canonical observations before writing reports and figures. `first_analysis.py` remains a lightweight summary/chart entry point.
+The runner verifies all 153 daily source files, expected zones, resolution, and raw-to-canonical row equality before writing outputs. It does not download data. `first_analysis.py` remains a lightweight summary/chart entry point. Run tests with `.\.venv\Scripts\python.exe .\tests\run_tests.py`.
 
 ## Running tests
 
@@ -148,4 +167,4 @@ Current status:
 
 ## Data availability status
 
-The current empirical files have been downloaded, validated, and preserved locally. Re-run `python -m src.research` to reproduce the analysis from those files; it does not fetch data.
+The current working copy has valid local source data and generated outputs. A fresh clone must run the download command above before `python -m src.research`; the checked-in tables and figures are review snapshots, not substitutes for the raw or canonical input data.

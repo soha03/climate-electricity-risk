@@ -1,0 +1,25 @@
+country_code,bidding_zone,market,position_mwh,price_change_scenario_eur_mwh,long_position_loss_eur,interpretation
+DE,DE-LU,Germany,1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+DE,DE-LU,Germany,1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+DE,DE-LU,Germany,1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+DE,DE-LU,Germany,1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
+AT,AT,Austria,1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+AT,AT,Austria,1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+AT,AT,Austria,1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+AT,AT,Austria,1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
+FR,FR,France,1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+FR,FR,France,1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+FR,FR,France,1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+FR,FR,France,1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
+ES,ES,Spain,1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+ES,ES,Spain,1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+ES,ES,Spain,1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+ES,ES,Spain,1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
+PT,PT,Portugal,1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+PT,PT,Portugal,1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+PT,PT,Portugal,1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+PT,PT,Portugal,1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
+IT,IT-North,Italy (IT-North),1.0,-250.0,250.0,instantaneous price shock; not an estimated probability
+IT,IT-North,Italy (IT-North),1.0,-100.0,100.0,instantaneous price shock; not an estimated probability
+IT,IT-North,Italy (IT-North),1.0,100.0,-100.0,instantaneous price shock; not an estimated probability
+IT,IT-North,Italy (IT-North),1.0,250.0,-250.0,instantaneous price shock; not an estimated probability
