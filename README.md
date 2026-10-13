@@ -1,4 +1,4 @@
-# Stochastic Electricity Market Risk under Climate Transition Scenarios
+﻿# European Day-Ahead Electricity Prices: Market Dynamics and Short-Horizon Risk
 
 ## Research objective
 
@@ -21,43 +21,61 @@ European electricity markets are increasingly shaped by renewable penetration, w
 
 ## Data and scope
 
-Analysis runs offline after the data is present and does not require an API token. The repository includes the report, compact review tables, and final figures. It intentionally does not include the 153 raw daily CSVs or the full canonical observation file; those are generated locally by the documented download step.
+This project analyses observed day-ahead electricity prices across six European bidding zones from 1 May to 30 September 2026.
 
-The project is designed for real market data from the following sources:
+### Data source
 
-- Original market source: ENTSO-E Transparency Platform
-- Local redistribution used for this sample: [european-power-prices](https://github.com/whipeeer-creator/european-power-prices), which documents daily file schema, zones, UTC interval-start timestamps, and EUR/MWh prices
-- The preserved original source files and per-observation source/retrieval metadata are retained for provenance
+The analysis uses daily CSV files from the public `european-power-prices` repository:
 
-The canonical dataset contains six columns:
+https://github.com/whipeeer-creator/european-power-prices
 
-- timestamp_utc
-- country_code
-- bidding_zone
-- price_eur_mwh
-- source
-- retrieved_at
+The current analysis uses this public CSV redistribution. It is not a direct extraction from the ENTSO-E Transparency Platform API. ENTSO-E is not claimed as a data source directly queried by this project.
 
-All timestamps are timezone-aware UTC interval-start timestamps. The selected zones are 15-minute resolution throughout this sample. There are 87,072 observed rows: 14,512 per market. Two common partial days have gaps; no missing observations are filled and no hourly aggregation is applied. Negative prices are retained in EUR/MWh.
+### Sample coverage
 
-The canonical `country_code` for the Italian observation is `IT`, while its explicit source `bidding_zone` is `IT-NORTH` after canonical uppercasing. This is not an Italy-wide aggregate; Italy has multiple bidding zones.
+- Period: 1 May–30 September 2026.
+- Markets: DE-LU, Austria, France, Spain, Portugal, and Italy-North.
+- Resolution: 15-minute day-ahead electricity prices.
+- Observed rows: 87,072, with 14,512 observations per market.
+- Missing grid intervals: 1,056 across two common partial UTC days.
 
+### Data handling
+
+The source timestamps are interpreted as UTC interval-start timestamps. Negative prices are retained. Missing intervals are not imputed, and price-change metrics use consecutive observations only. The sample is not aggregated to hourly frequency for the core analysis.
+
+The Italian market is represented by the specific IT-North bidding zone, not by an Italy-wide aggregate.
+
+### Analysis performed
+
+- Descriptive statistics and price distributions.
+- Negative-price incidence and intraday price profiles.
+- Cross-market price-level and price-change correlations.
+- Rolling 24-hour price volatility.
+- Seasonal AR(1) benchmark evaluated against persistence using a chronological holdout.
+- Historical Value at Risk (VaR) and Expected Shortfall (ES) for a defined one-interval exposure.
+- Deterministic price-shock stress tests.
+
+### Scope and limitations
+
+The project establishes an empirical baseline for electricity-price dynamics and short-horizon risk. It does not estimate causal climate-transition effects. Weather, demand, renewable generation, fuel and carbon prices, and interconnector flows are not included as explanatory variables in the current analysis.
+
+The five-month sample, missing intervals, and remaining model residual structure limit the conclusions. Climate-transition scenarios and conditional risk modelling are potential future extensions.
 ## Repository structure
 
-- src/config.py — project-wide constants, market definitions, and schema
-- src/data/ingest_prices.py — data validation, schema standardisation, and future ENTSO-E adapter hooks
-- src/analyze_prices.py — canonical validation and descriptive analysis helpers
-- src/research.py — empirical audit, distributions, intraday profiles, rolling volatility, correlations, model evaluation, risk outputs, figures, and Markdown report
-- src/models/stochastic.py — additive seasonal AR(1), chronological holdout evaluation, and bootstrap simulation
-- src/risk/metrics.py — explicitly signed price-change VaR/ES and price-shock loss tools
-- src/visualization/plots.py — plotting utilities for figures and diagnostics
-- tests/test_analysis.py — offline verification suite
-- tests/run_tests.py — test runner for the repository
-- data/raw/ — raw downloaded files and metadata
-- data/processed/ — validated empirical datasets
-- data/synthetic/ — synthetic fixtures for software testing only; never included in empirical estimates
-- reports/ — generated Markdown research report
-- figures/ — saved plots and publication outputs
+- src/config.py â€” project-wide constants, market definitions, and schema
+- src/data/ingest_prices.py â€” data validation, schema standardisation, and future ENTSO-E adapter hooks
+- src/analyze_prices.py â€” canonical validation and descriptive analysis helpers
+- src/research.py â€” empirical audit, distributions, intraday profiles, rolling volatility, correlations, model evaluation, risk outputs, figures, and Markdown report
+- src/models/stochastic.py â€” additive seasonal AR(1), chronological holdout evaluation, and bootstrap simulation
+- src/risk/metrics.py â€” explicitly signed price-change VaR/ES and price-shock loss tools
+- src/visualization/plots.py â€” plotting utilities for figures and diagnostics
+- tests/test_analysis.py â€” offline verification suite
+- tests/run_tests.py â€” test runner for the repository
+- data/raw/ â€” raw downloaded files and metadata
+- data/processed/ â€” validated empirical datasets
+- data/synthetic/ â€” synthetic fixtures for software testing only; never included in empirical estimates
+- reports/ â€” generated Markdown research report
+- figures/ â€” saved plots and publication outputs
 
 ## Installation
 
@@ -168,3 +186,5 @@ Current status:
 ## Data availability status
 
 The current working copy has valid local source data and generated outputs. A fresh clone must run the download command above before `python -m src.research`; the checked-in tables and figures are review snapshots, not substitutes for the raw or canonical input data.
+
+
