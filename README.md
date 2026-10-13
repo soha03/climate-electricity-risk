@@ -1,4 +1,4 @@
-# European Day-Ahead Electricity Prices: Market Dynamics and Short-Horizon Risk
+# Stochastic Electricity Market Risk under Climate Transition Scenarios
 
 ## Research objective
 
@@ -21,37 +21,26 @@ European electricity markets are increasingly shaped by renewable penetration, w
 
 ## Data and scope
 
-The analysis uses day-ahead electricity prices published in the public [`european-power-prices`](https://github.com/whipeeer-creator/european-power-prices) GitHub repository. That repository republishes daily CSV files, is updated daily, and identifies the ENTSO-E Transparency Platform as the underlying source of the market prices. This project uses the redistributed CSV files; it does not retrieve prices directly through the ENTSO-E API.
+The project runs offline after the data is present and does not require an API token. The six per-zone CSV extracts used for this study are preserved in `data/raw/day_ahead_prices_2026_05_01_2026_09_30/` and transformed into `data/processed/day_ahead_prices.csv`.
 
-### Sample and markets
+The project is designed for real market data from the following sources:
 
-- Period: 1 May 2026 to 30 September 2026, inclusive
-- Bidding zones: DE-LU, AT, FR, ES, PT, and IT-North
-- Resolution: 15 minutes
-- Unit: EUR/MWh
-- Expected complete grid: 14,688 intervals per market
-- Observed sample: 14,512 intervals per market, 87,072 rows in total
+- Original market source: ENTSO-E Transparency Platform
+- Local redistribution used for this sample: [european-power-prices](https://github.com/whipeeer-creator/european-power-prices), which documents daily file schema, zones, UTC interval-start timestamps, and EUR/MWh prices
+- The source repository republishes daily CSV files from ENTSO-E and is updated daily. This project uses its redistributed files, not a direct ENTSO-E API download. The extraction was performed by cloning the repository and running its `merge.py` script for each selected zone and date range.
 
-The Italian series is IT-North, not an Italy-wide aggregate. Negative prices are retained. Missing intervals are left missing and are not filled or treated as zero.
+The canonical dataset contains six columns:
 
-### How the data was obtained
+- timestamp_utc
+- country_code
+- bidding_zone
+- price_eur_mwh
+- source
+- retrieved_at
 
-The source repository was cloned locally, then its `merge.py` script was used to extract each bidding zone and the required date range. The resulting CSV exports were used in this project's analysis.
+All timestamps are timezone-aware UTC interval-start timestamps. The selected zones are 15-minute resolution throughout this sample. There are 87,072 observed rows: 14,512 per market. The complete grid would contain 14,688 intervals per market. The extracts have 176 missing intervals per market, with 88 missing on 30 June and 88 on 7 September 2026. No missing observations are filled and no hourly aggregation is applied. Negative prices are retained in EUR/MWh.
 
-Example commands, run from the cloned `european-power-prices` folder:
-
-```powershell
-python merge.py --zone DE-LU --resolution 15 --from 2026-05-01 --to 2026-09-30
-python merge.py --zone AT --resolution 15 --from 2026-05-01 --to 2026-09-30
-python merge.py --zone FR --resolution 15 --from 2026-05-01 --to 2026-09-30
-python merge.py --zone ES --resolution 15 --from 2026-05-01 --to 2026-09-30
-python merge.py --zone PT --resolution 15 --from 2026-05-01 --to 2026-09-30
-python merge.py --zone IT-North --resolution 15 --from 2026-05-01 --to 2026-09-30
-```
-
-The source files use UTC interval-start timestamps and include the zone, price in EUR/MWh, and resolution in minutes. The source repository documents that it collects prices from ENTSO-E and updates its daily files; see its README for source notes, resolution details, corrections, and licence information.
-
-The extracted sample has gaps on 30 June and 7 September 2026: 88 missing 15-minute intervals per market on each date. No imputation is applied. The source CSVs are not bundled in this repository; obtain them using the steps above before reproducing the empirical results.
+The canonical `country_code` for the Italian observation is `IT`, while its explicit source `bidding_zone` is `IT-NORTH` after canonical uppercasing. This is not an Italy-wide aggregate; Italy has multiple bidding zones.
 
 ## Repository structure
 
@@ -64,7 +53,7 @@ The extracted sample has gaps on 30 June and 7 September 2026: 88 missing 15-min
 - src/visualization/plots.py — plotting utilities for figures and diagnostics
 - tests/test_analysis.py — offline verification suite
 - tests/run_tests.py — test runner for the repository
-- data/raw/ — raw downloaded files and metadata
+- data/raw/day_ahead_prices_2026_05_01_2026_09_30/ — six preserved per-zone CSV extracts
 - data/processed/ — validated empirical datasets
 - data/synthetic/ — synthetic fixtures for software testing only; never included in empirical estimates
 - reports/ — generated Markdown research report
@@ -84,14 +73,14 @@ If the environment already contains the required dependencies, the install step 
 
 ## Running the project
 
-Run the full analysis without downloading or changing raw files:
+Run the full analysis from the six committed source extracts:
 
 ```powershell
 cd C:\Users\SOHA\Documents\energy-risk-lab
-.\.venv\Scripts\python.exe -m src.research
+.\.venv\Scripts\python.exe finalize_pipeline.py
 ```
 
-The analysis runner reads the locally prepared empirical dataset and writes reports and figures. Ensure the source data has been extracted and placed in the paths expected by the project before running it. `first_analysis.py` remains a lightweight summary/chart entry point.
+The pipeline validates each extract, rebuilds the canonical dataset, re-audits source rows against the analysis dataset, and regenerates tables, figures, and the Markdown report. It does not download data or require an ENTSO-E API token. `first_analysis.py` remains a lightweight summary/chart entry point.
 
 ## Running tests
 
@@ -110,8 +99,8 @@ The canonical dataset must contain the following fields:
 - country_code: ISO code in the set {DE, AT, FR, ES, PT, IT}
 - bidding_zone: market zone identifier, if known
 - price_eur_mwh: price in EUR/MWh, may be negative
-- source: provenance label for the observation
-- retrieved_at: UTC retrieval timestamp, when recorded
+- source: data source label such as ENTSO-E or synthetic
+- retrieved_at: UTC retrieval timestamp
 
 Quality rules:
 
@@ -123,6 +112,18 @@ Quality rules:
 - Validate country codes and time stamps before any descriptive analysis.
 - Do not mix resolutions. The selected zones are all 15-minute products during this period.
 - Count returns and model transitions only when timestamps are exactly 15 minutes apart.
+
+## Future ENTSO-E integration
+
+The project retains an adapter boundary for future direct ENTSO-E use. Credentials belong in environment variables, never in source files. Current empirical results come from the documented local daily CSV source and do not depend on an ENTSO-E API call.
+
+Example configuration:
+
+```powershell
+$env:ENTSOE_API_TOKEN = "your-token-here"
+```
+
+The data ingestion step should later validate that the correct bidding-zone identifiers are used for each country, especially for Italy. API authentication is intentionally isolated and does not affect the offline pipeline.
 
 ## What is and is not available
 
@@ -147,4 +148,4 @@ Current status:
 
 ## Data availability status
 
-The full source dataset is not committed here. After extracting the six market series and placing the data where the project expects it, run `python -m src.research` to reproduce the analysis. The analysis command itself does not download the upstream data.
+The current empirical files have been downloaded, validated, and preserved locally. Re-run `python -m src.research` to reproduce the analysis from those files; it does not fetch data.
