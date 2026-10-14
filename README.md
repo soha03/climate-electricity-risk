@@ -1,4 +1,4 @@
-# Stochastic Electricity Market Risk under Climate Transition Scenarios
+## European Electricity Prices: Evidence on Price Behaviour and Short-Term Risk
 
 ## Research objective
 
